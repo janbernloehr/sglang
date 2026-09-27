@@ -893,7 +893,11 @@ class TestGoldenModelOverrides(_IsolatedPublish):
         from sglang.srt.arg_groups.model_overrides.mimo_v2 import _mimo_v2_overrides
 
         def _args(**kw):
-            defaults = dict(speculative_algorithm=None, moe_runner_backend="auto")
+            defaults = dict(
+                speculative_algorithm=None,
+                moe_runner_backend="auto",
+                _model_config=SimpleNamespace(is_fp4_experts=False),
+            )
             defaults.update(kw)
             return SimpleNamespace(**defaults)
 
@@ -909,6 +913,32 @@ class TestGoldenModelOverrides(_IsolatedPublish):
             # FP4 checkpoints run through flashinfer_mxfp4, so they must not be
             # pinned to flashinfer_trtllm.
             self.assertEqual(_mimo_v2_overrides(_args(), _hf("mxfp4")), {})
+
+    def test_mimo_v2_sm100_mixed_mxfp4_selects_native_runner(self):
+        for architecture in ("MiMoV2ForCausalLM", "MiMoV2FlashForCausalLM"):
+            for a2a_backend in ("none", "deepep"):
+                for runner in ("auto", "deep_gemm", "flashinfer_mxfp4"):
+                    with (
+                        self.subTest(
+                            architecture=architecture, a2a=a2a_backend, runner=runner
+                        ),
+                        override_platform(is_sm100=True),
+                    ):
+                        args = SimpleNamespace(
+                            speculative_algorithm=None,
+                            moe_runner_backend=runner,
+                            moe_a2a_backend=a2a_backend,
+                            _model_config=SimpleNamespace(is_fp4_experts=True),
+                        )
+                        expected = {}
+                        if runner == "auto" and a2a_backend == "none":
+                            expected["moe_runner_backend"] = "flashinfer_mxfp4"
+                        self.assertEqual(
+                            collect_model_override_declarations(
+                                architecture, args, _hf("fp8")
+                            ),
+                            [("_mimo_v2_overrides", expected)] if expected else [],
+                        )
 
     def test_mimo_v2_family_is_registered(self):
         with override_platform(is_sm100=False):
