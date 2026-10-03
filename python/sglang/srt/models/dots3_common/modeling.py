@@ -106,6 +106,7 @@ from sglang.srt.model_executor.forward_context import (
     get_attn_backend,
     get_token_to_kv_pool,
 )
+from sglang.srt.model_loader.utils import create_weight_loader_executor
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.deepseek_common.deepseek_weight_loader import (
     _load_fused_indexer_wk,
@@ -2062,7 +2063,7 @@ class Dots3LanguageModelForCausalLM(nn.Module):
             assert self.num_fused_shared_experts == 1
             log_info_on_rank0(logger, "Shared experts fusion optimization enabled.")
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with create_weight_loader_executor() as executor:
             futures = []
             params_dict = dict(self.named_parameters())
             pending_indexer_wk = {}

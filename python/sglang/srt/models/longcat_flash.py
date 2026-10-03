@@ -88,6 +88,7 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.utils import (
+    create_weight_loader_executor,
     maybe_executor_submit,
     should_async_load,
     should_deepgemm_weight_requant_ue8m0,
@@ -923,7 +924,7 @@ class LongcatFlashForCausalLM(nn.Module):
             self.config.q_lora_rank is not None
         )
         cached_a_proj = {} if fuse_qkv_a_proj else None
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with create_weight_loader_executor() as executor:
             futures = []
             params_dict = dict(self.named_parameters())
             weight_names = []

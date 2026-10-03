@@ -16,6 +16,7 @@ from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from sglang.srt.configs.model_config import ModelConfig, ModelImpl
 from sglang.srt.layers import deep_gemm_wrapper
+from sglang.srt.runtime_context import get_model
 from sglang.srt.utils import get_device_sm
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,18 @@ def should_deepgemm_weight_requant_ue8m0(
     ):
         return False
     return True
+
+
+def create_weight_loader_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Create the per-rank tensor-copy pool, independent of shard I/O pools.
+
+    Passing None preserves Python's default sizing. The returned executor
+    must be used as a context manager so all copies finish before post-load
+    processing, including when a worker raises.
+    """
+    return concurrent.futures.ThreadPoolExecutor(
+        max_workers=get_model().weight_loader_copy_num_threads
+    )
 
 
 def should_async_load(weight: torch.Tensor) -> bool:

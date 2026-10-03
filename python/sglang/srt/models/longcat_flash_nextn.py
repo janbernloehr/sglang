@@ -30,7 +30,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import concurrent.futures
 import logging
 from typing import Iterable, Optional, Tuple
 
@@ -69,7 +68,10 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.model_loader.utils import should_deepgemm_weight_requant_ue8m0
+from sglang.srt.model_loader.utils import (
+    create_weight_loader_executor,
+    should_deepgemm_weight_requant_ue8m0,
+)
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.deepseek_v2 import DeepseekV2AttentionMLA
 from sglang.srt.models.longcat_flash import LongcatFlashForCausalLM, LongcatFlashMLP
@@ -538,7 +540,7 @@ class LongcatFlashForCausalLMNextN(LongcatFlashForCausalLM):
             "model.mtp.layers.0.transformer_layer.mlp.up_proj.weight_scale_inv": "layers.0.mlp.up_proj.weight_scale_inv",
             "model.mtp.norm.weight": "layers.0.final_layernorm.weight",
         }
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with create_weight_loader_executor() as executor:
             futures = []
             params_dict = dict(self.named_parameters())
             weight_names = []

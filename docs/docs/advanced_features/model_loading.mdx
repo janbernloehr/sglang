@@ -168,7 +168,7 @@ python -m sglang.launch_server \
 
 ## Weight-loading performance flags
 
-Top-level arguments that tune how safetensors weights are read, independent of `--load-format`.
+Top-level arguments that tune checkpoint reading and model weight copying. Applicability depends on the loader and model implementation.
 
 <table style={{width: "100%", borderCollapse: "collapse", tableLayout: "fixed"}}>
   <colgroup>
@@ -216,6 +216,43 @@ Top-level arguments that tune how safetensors weights are read, independent of `
     </tr>
   </tbody>
 </table>
+
+## Tensor-copy parallelism
+
+Use `--weight-loader-copy-num-threads` to cap the worker threads per rank that
+copy checkpoint tensors into model parameters. This applies to DeepSeek V4,
+models using the shared DeepSeek V2/V3 weight loader, LongCat (including its
+MTP loader), and Dots3. Other model implementations keep their existing loading
+behavior.
+
+For example, on a Linux CUDA server with a local DeepSeek V4 checkpoint and
+eight GPUs, you can test two copy workers per rank:
+
+```bash
+python -m sglang.launch_server \
+  --model-path /path/to/deepseek-v4-checkpoint \
+  --tp 8 \
+  --weight-loader-prefetch-checkpoints \
+  --weight-loader-copy-num-threads 2
+```
+
+Omit the flag to preserve Python's `ThreadPoolExecutor` default sizing. Values
+must be positive integers. A value of `1` uses one background worker; it does
+not switch loading to the caller thread. Existing decisions to load a tensor
+synchronously, including the RunAI-streamer buffer-lifetime guard where used,
+are unchanged.
+
+The three concurrency controls address different stages:
+
+- `--weight-loader-prefetch-num-threads`: reads checkpoint files into the OS page cache.
+- `--model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}'`: controls concurrent shard reading in the default loader.
+- `--weight-loader-copy-num-threads`: controls concurrent per-tensor weight-loader calls in the model implementations listed above.
+
+A smaller copy pool can help when concurrent mmap faults and device copies
+contend on network storage, even with checkpoint prefetch enabled. Measure
+startup on your model and filesystem before choosing a limit; `2` is an example,
+not a universal optimum. This flag limits active workers, not queued tensors or
+total memory use.
 
 ## See also
 

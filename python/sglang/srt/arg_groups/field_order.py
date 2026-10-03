@@ -520,5 +520,15 @@ POSITIONAL_FIELD_ORDER = (
     "enable_decoder_swa_bounded_replay",
     "enable_response_store",
     "disaggregation_decode_host_receive_threshold",
+    # Preserve the previously implicit tail before appending a new argument.
+    "qsa_indexer_dtype",
+    "disaggregation_decode_allocation_policy",
+    "speculative_boundary_reduction",
+    "speculative_draft_sink_size",
+    "disable_aiter_allreduce_fusion_in_prefill",
+    "disable_aiter_allreduce_fusion_in_decode",
+    "enable_dsa_fused_indexer",
+    "grpc_response_timeout_secs",
+    "weight_loader_copy_num_threads",
 )
 # fmt: on

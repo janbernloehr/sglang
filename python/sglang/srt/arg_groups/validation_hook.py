@@ -88,10 +88,19 @@ def check_pipeline_parallel_compat(cfg: Any) -> None:
     )
 
 
+def validate_weight_loader_copy_num_threads(value: Optional[int]) -> None:
+    if value is not None and (type(value) is not int or value < 1):
+        raise ValueError(
+            "--weight-loader-copy-num-threads must be a positive integer or unset"
+        )
+
+
 def check_server_args(server_args: Any):
     from sglang.srt.arg_groups.lora_hook import check_lora_server_args
 
     cfg = resolving_view(server_args)
+
+    validate_weight_loader_copy_num_threads(cfg.weight_loader_copy_num_threads)
 
     # Check parallel size constraints
     if cfg.ep_join_mode != "scale":

@@ -150,7 +150,11 @@ from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph.context
 from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
     get_tc_piecewise_forward_context,
 )
-from sglang.srt.model_loader.utils import maybe_executor_submit, should_async_load
+from sglang.srt.model_loader.utils import (
+    create_weight_loader_executor,
+    maybe_executor_submit,
+    should_async_load,
+)
 from sglang.srt.model_loader.weight_utils import (
     RUNAI_STREAMER_TENSOR_ATTR,
     default_weight_loader,
@@ -5578,7 +5582,7 @@ class DeepseekV4ForCausalLM(nn.Module):
             assert self.num_fused_shared_experts == 1
             log_info_on_rank0(logger, "Shared experts fusion optimization enabled.")
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with create_weight_loader_executor() as executor:
             futures = []
             weight_names = []
             for name, loaded_weight in weights:
