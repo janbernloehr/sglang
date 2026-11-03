@@ -1,4 +1,4 @@
-"""CPU offload must preserve device buffers and cached convolution views."""
+"""CPU offload must preserve device buffers, cached views, and eager indexers."""
 
 import os
 import unittest
@@ -80,6 +80,29 @@ class TestCpuOffloader(CustomTestCase):
         self.device = torch.accelerator.current_accelerator(check_available=True)
         if self.device is None:
             self.skipTest("An accelerator is required to exercise CPU offload")
+
+    def test_indexer_runs_outside_offloaded_forward(self) -> None:
+        """Graph replay must run indexer projections after the layer restores CPU weights."""
+        with torch.no_grad():
+            attention = nn.Sequential()
+            attention.add_module(
+                "indexer",
+                nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 3)),
+            )
+            model = nn.Sequential(attention, nn.Linear(3, 2)).to(self.device)
+            inputs = torch.randn(2, 3, device=self.device)
+            expected = model(inputs)
+            expected_indexer = attention.indexer(inputs)
+
+            model = OffloaderV1(cpu_offload_max_bytes=1024**2).maybe_offload_to_cpu(
+                model
+            )
+            torch.testing.assert_close(model(inputs), expected)
+            self.assertEqual(model[1].weight.device.type, "cpu")
+
+            # DSA eager breaks resolve the indexer from the forward context and
+            # invoke it after the offloaded layer's functional_call has returned.
+            torch.testing.assert_close(attention.indexer(inputs), expected_indexer)
 
     def test_cpu_offloaded_gemma_weight_fills_device_buffer(self) -> None:
         norm = GemmaRMSNorm(16).to(self.device)
