@@ -138,6 +138,147 @@ class TestFp8MoERunnerOwnership(CustomTestCase):
         self._assert_activation_params_absent(layer)
 
 
+class TestFp8MoEMarlinFallback(CustomTestCase):
+    def setUp(self):
+        self.enterContext(
+            get_flags().moe.override(
+                runner_backend=MoeRunnerBackend.MARLIN,
+                a2a_backend=MoeA2ABackend.NONE,
+            )
+        )
+        # Exercise CUDA selection and layout with CPU tensors; no kernel runs.
+        for name in (
+            "_is_cpu",
+            "_is_xpu",
+            "_is_npu",
+            "_is_hip",
+            "_use_aiter",
+            "_use_hip_int4",
+        ):
+            self.enterContext(patch.object(fp8_module, name, False))
+        self.enterContext(
+            patch.object(fp8_module, "use_intel_amx_backend", return_value=False)
+        )
+
+    def test_inherited_marlin_uses_fp8_runner_and_matching_weight_layout(self):
+        # TP1 reproduces the unset runner. TP2 also requires the weight creator
+        # to resolve Marlin to Triton before refining split checkpoint blocks.
+        for block in (None, [128, 128]):
+            for tp_size in (1, 2):
+                with self.subTest(block=block, tp_size=tp_size):
+                    config = Fp8Config(
+                        is_checkpoint_fp8_serialized=True, weight_block_size=block
+                    )
+                    method = Fp8MoEMethod(config)
+                    layer = torch.nn.Module()
+                    layer.moe_runner_config = MoeRunnerConfig()
+                    layer.moe_tp_size = tp_size
+                    layer.use_presharded_weights = False
+                    shard = 640 // tp_size
+                    method.create_weights(
+                        layer,
+                        num_experts=2,
+                        hidden_size=256,
+                        intermediate_size_per_partition=shard,
+                        params_dtype=torch.bfloat16,
+                        weight_loader=lambda *args, **kwargs: None,
+                    )
+                    method.create_moe_runner(layer, layer.moe_runner_config)
+
+                    self.assertIsNotNone(method.runner)
+                    self.assertTrue(method._owns_moe_runner)
+                    self.assertEqual(
+                        method.get_moe_runner_backend(layer), MoeRunnerBackend.TRITON
+                    )
+                    self.assertEqual(
+                        get_flags().moe.runner_backend, MoeRunnerBackend.MARLIN
+                    )
+                    self.assertEqual(layer.w13_weight.dtype, torch.float8_e4m3fn)
+                    self.assertEqual(layer.w13_weight.shape, (2, 2 * shard, 256))
+                    self.assertEqual(layer.w2_weight.shape, (2, 256, shard))
+                    self.assertEqual(config.weight_block_size, block)
+
+                    # apply must reach the real Triton quant-info assembly. Only
+                    # the final runner execution is mocked, not selection/layout.
+                    dispatch = SimpleNamespace(hidden_states=torch.empty(1, 256))
+                    output = object()
+                    with patch.object(method.runner, "run", return_value=output) as run:
+                        self.assertIs(method.apply(layer, dispatch), output)
+                    quant_info = run.call_args.args[1]
+                    self.assertIs(quant_info.w13_weight, layer.w13_weight)
+                    self.assertTrue(quant_info.use_fp8_w8a8)
+                    if block is not None:
+                        n = 128 // tp_size
+                        self.assertEqual(quant_info.block_shape, [n, 128])
+                        self.assertEqual(
+                            quant_info.w2_block_shape, [128, n] if tp_size > 1 else None
+                        )
+                        self.assertEqual(layer.w13_weight_scale_inv.shape, (2, 10, 2))
+                        self.assertEqual(layer.w2_weight_scale_inv.shape, (2, 2, 5))
+
+    def test_fp4_marlin_and_direct_cutlass_keep_their_backend(self):
+        for backend, fp4 in (
+            (MoeRunnerBackend.MARLIN, True),
+            (MoeRunnerBackend.CUTLASS, False),
+        ):
+            with self.subTest(backend=backend, fp4=fp4):
+                method = Fp8MoEMethod(
+                    Fp8Config(
+                        is_checkpoint_fp8_serialized=True,
+                        weight_block_size=[128, 128],
+                        is_fp4_experts=fp4,
+                    )
+                )
+                with get_flags().moe.override(runner_backend=backend):
+                    method.create_moe_runner(None, MoeRunnerConfig())
+                    self.assertIsNone(method.runner)
+                    self.assertFalse(method._owns_moe_runner)
+                    self.assertEqual(method.get_moe_runner_backend(None), backend)
+
+    def test_existing_backend_resolution_is_preserved(self):
+        method = Fp8MoEMethod(Fp8Config())
+        for backend in (
+            MoeRunnerBackend.FLASHINFER_CUTLASS,
+            MoeRunnerBackend.FLASHINFER_CUTEDSL,
+            MoeRunnerBackend.TRITON,
+            MoeRunnerBackend.DEEP_GEMM,
+            MoeRunnerBackend.AITER,
+            MoeRunnerBackend.FLASHINFER_TRTLLM,
+            MoeRunnerBackend.FLASHINFER_TRTLLM_ROUTED,
+        ):
+            with (
+                self.subTest(backend=backend),
+                get_flags().moe.override(runner_backend=backend),
+            ):
+                expected = (
+                    MoeRunnerBackend.TRITON
+                    if backend
+                    in (
+                        MoeRunnerBackend.FLASHINFER_CUTLASS,
+                        MoeRunnerBackend.FLASHINFER_CUTEDSL,
+                    )
+                    else backend
+                )
+                self.assertEqual(method._resolve_moe_runner_backend(), expected)
+        with get_flags().moe.override(runner_backend=MoeRunnerBackend.AUTO):
+            self.assertEqual(
+                method._resolve_moe_runner_backend(), MoeRunnerBackend.TRITON
+            )
+            with (
+                patch.object(fp8_module, "_is_hip", True),
+                patch.object(fp8_module, "_use_aiter", True),
+            ):
+                self.assertEqual(
+                    method._resolve_moe_runner_backend(), MoeRunnerBackend.AITER
+                )
+            with patch.object(
+                method, "is_deepgemm_moe_runner_backend_enabled", return_value=True
+            ):
+                self.assertEqual(
+                    method._resolve_moe_runner_backend(), MoeRunnerBackend.DEEP_GEMM
+                )
+
+
 class TestMxfp4MoEMethodContract(CustomTestCase):
     def setUp(self):
         self.stack = self.enterContext(ExitStack())
