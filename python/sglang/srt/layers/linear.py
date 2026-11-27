@@ -22,6 +22,7 @@ from sglang.srt.distributed import (
     tensor_model_parallel_quant_all_reduce,
 )
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
+    SymmetricMemoryContext,
     use_symmetric_memory,
 )
 from sglang.srt.distributed.utils import get_group_rank_size
@@ -1777,10 +1778,17 @@ class RowParallelLinear(LinearBase):
                 # local outputs; they do not need a collective memory window.
                 disabled=self.tp_group is None or not is_allocation_symmetric(),
             )
+        # Every rank must run the same GEMM inside the symmetric pool. A
+        # rank-0-only bias epilogue can take a different BLAS path whose
+        # workspace grows the pool on rank 0 alone, and the collective segment
+        # registration at context exit then deadlocks. Add the bias in place
+        # after the context instead.
+        defer_bias = bias_ is not None and isinstance(symm_ctx, SymmetricMemoryContext)
+        gemm_bias = None if defer_bias else bias_
         with symm_ctx:
             if output_tensor is None:
                 output_parallel = self.quant_method.apply(
-                    self, input_parallel, bias=bias_
+                    self, input_parallel, bias=gemm_bias
                 )
             else:
                 apply_into = getattr(self.quant_method, "apply_into", None)
@@ -1790,8 +1798,10 @@ class RowParallelLinear(LinearBase):
                         "caller-owned linear output"
                     )
                 output_parallel = apply_into(
-                    self, input_parallel, output_tensor, bias=bias_
+                    self, input_parallel, output_tensor, bias=gemm_bias
                 )
+        if defer_bias:
+            output_parallel.add_(bias_)
 
         # skip_all_reduce: explicit call-site override. Also honor the
         # mlp_reduce_scatter ForwardFlag published by the decoder — callers
